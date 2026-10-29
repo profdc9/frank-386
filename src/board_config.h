@@ -539,6 +539,10 @@ static inline uint get_psram_pin(void) {
 #define CONFIG_CPU_DIR      "/.config/386"
 #define CONFIG_PLATFORM_DIR CONFIG_CPU_DIR "/" CONFIG_PLATFORM_NAME
 #define CONFIG_FILE_PATH    CONFIG_PLATFORM_DIR "/config.ini"
+/* Read when there is no per-platform file yet: the config.ini that sits next
+ * to the BIOS and disk images, as the README describes. Saving settings
+ * writes CONFIG_FILE_PATH, which takes precedence from then on. */
+#define CONFIG_FALLBACK_PATH "386/config.ini"
 #define VIDEO_MARKER_VGA    CONFIG_PLATFORM_DIR "/force_vga"
 #define VIDEO_MARKER_HDMI   CONFIG_PLATFORM_DIR "/force_dvi"
 #define AUDIO_MARKER_PWM    CONFIG_PLATFORM_DIR "/force_pwm"

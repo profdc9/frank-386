@@ -703,7 +703,13 @@ static int load_config_from_sd(const char *filename) {
     res = f_open(&fp, path, FA_READ);
     if (res != FR_OK) {
         DBG_PRINT("Config file not found: %s (error %d)\n", path, res);
-        return -1;
+        // No per-platform file yet: use the one beside the BIOS and images.
+        snprintf(path, sizeof(path), "386/%s", filename);
+        res = f_open(&fp, path, FA_READ);
+        if (res != FR_OK) {
+            DBG_PRINT("Config file not found: %s (error %d)\n", path, res);
+            return -1;
+        }
     }
 
     DBG_PRINT("Loading config: %s\n", path);
@@ -954,7 +960,8 @@ static bool init_hardware(void) {
         FIL fp;
         char *content = NULL;
 
-        if (f_open(&fp, CONFIG_FILE_PATH, FA_READ) == FR_OK) {
+        if (f_open(&fp, CONFIG_FILE_PATH, FA_READ) == FR_OK ||
+            f_open(&fp, CONFIG_FALLBACK_PATH, FA_READ) == FR_OK) {
             FSIZE_t size = f_size(&fp);
             content = malloc(size + 1);
             if (content) {
