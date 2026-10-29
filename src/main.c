@@ -77,6 +77,12 @@
 // Global State
 //=============================================================================
 
+#if defined(USB_CONSOLE_DEBUG) && defined(HDMI_HSTX)
+extern void video_output_debug_rate(const char *);
+#define HSTX_MARK(l) video_output_debug_rate(l)
+#else
+#define HSTX_MARK(l) ((void)0)
+#endif
 PC *pc = NULL;
 static PCConfig config;
 volatile bool initialized = false;
@@ -615,6 +621,19 @@ static void poll_keyboard(void) {
 
 static void platform_poll(void *opaque) {
     (void)opaque;
+#if defined(USB_CONSOLE_DEBUG) && defined(HDMI_HSTX)
+    {
+        /* Steady-state health of the HSTX scanout, from core 0 so a printf
+         * cannot stall the video interrupt on core 1. */
+        extern void hdmi_hstx_status(void);
+        static uint32_t last_us;
+        const uint32_t now = time_us_32();
+        if (now - last_us > 2000000u) {
+            last_us = now;
+            hdmi_hstx_status();
+        }
+    }
+#endif
     poll_keyboard();
     // VGA update is handled by Core 1, don't call here to avoid contention
 }
@@ -673,6 +692,7 @@ static int load_config_from_sd(const char *filename) {
     FILINFO fno;
 
     // Debug: List 386 directory contents
+    HSTX_MARK("after nes pad init");
     DBG_PRINT("Checking SD card contents...\n");
     res = f_opendir(&dir, "386");
     if (res == FR_OK) {
@@ -1020,6 +1040,7 @@ static bool init_hardware(void) {
 
 #ifdef BOARD_HAS_PS2
     // Initialize unified PS/2 driver (keyboard + mouse on shared PIO)
+    HSTX_MARK("before ps2 init");
     DBG_PRINT("Initializing PS/2 (unified driver)...\n");
     DBG_PRINT("  Keyboard CLK: GPIO%d, DATA: GPIO%d\n", PS2_PIN_CLK, PS2_PIN_DATA);
     DBG_PRINT("  Mouse    CLK: GPIO%d, DATA: GPIO%d\n", PS2_MOUSE_CLK, PS2_MOUSE_DATA);
@@ -1044,6 +1065,7 @@ static bool init_hardware(void) {
 
     // Initialize NES/SNES gamepad (if pins defined for this board)
 #ifdef NESPAD_GPIO_CLK
+    HSTX_MARK("after ps2 init");
     DBG_PRINT("Initializing NES gamepad...\n");
     DBG_PRINT("  CLK: GPIO%d, DATA: GPIO%d, LATCH: GPIO%d\n",
               NESPAD_GPIO_CLK, NESPAD_GPIO_DATA, NESPAD_GPIO_LATCH);
@@ -1124,6 +1146,7 @@ static bool init_emulator(void) {
     dc_init();
 
     // Create PC instance
+    HSTX_MARK("before pc_new");
     DBG_PRINT("\nCreating PC instance...\n");
     pc = pc_new(vga_redraw, platform_poll, NULL, NULL, &config);
     if (!pc) {
@@ -1139,6 +1162,7 @@ static bool init_emulator(void) {
     pc->paused = 0;
 
     // Initialize disk UI
+    HSTX_MARK("after pc_new");
     DBG_PRINT("Initializing Disk UI...\n");
     diskui_init();
 
@@ -1170,6 +1194,7 @@ static bool init_emulator(void) {
               pc->tandy_enabled, pc->covox_enabled, pc->dss_enabled, pc->mouse_enabled);
 
     // Check if BIOS file exists before loading
+    HSTX_MARK("before bios load");
     DBG_PRINT("Loading BIOS...\n");
     if (config.bios && config.bios[0]) {
         char bios_path[256];
@@ -1209,6 +1234,13 @@ static void __not_in_flash_func(core1_entry)(void) {
     vga_hw_init();
     sleep_ms(100);
     vga_initialized = true;
+#if defined(USB_CONSOLE_DEBUG) && defined(HDMI_HSTX)
+    {
+        /* Report from here, so it does not depend on the rest of start-up. */
+        extern void hdmi_debug_report(void);
+        hdmi_debug_report();
+    }
+#endif
 
     DBG_PRINT("Initializing runtime audio output...\n");
     audio_set_enabled(false);
@@ -1217,7 +1249,13 @@ static void __not_in_flash_func(core1_entry)(void) {
     audio_set_enabled(true);
     config_clear_changes();
     while(!initialized) {
+#ifdef HDMI_HSTX
+        /* sleep_ms() is in flash; see the main loop below. Wait in RAM. */
+        for (int i = 0; i < 256; i++)
+            __asm volatile ("nop");
+#else
         sleep_ms(1);
+#endif
         __dmb();
     }
     static repeating_timer_t m_timer = { 0 };
@@ -1225,7 +1263,16 @@ static void __not_in_flash_func(core1_entry)(void) {
 	add_repeating_timer_us(-1000000 / hz, timer_callback0, pc, &m_timer);
     while(1) {
         repeat_me_often();
+#ifdef HDMI_HSTX
+        /* sleep_us() lives in flash. With core 0 saturating the QSPI
+         * interface with PSRAM traffic, a flash fetch here can stall long
+         * enough that the HSTX DMA interrupt, which has a few microseconds
+         * to reprogram a channel, runs late. Pause from RAM instead. */
+        for (int i = 0; i < 64; i++)
+            __asm volatile ("nop");
+#else
         sleep_us(1);
+#endif
     }
     __unreachable();
 }
@@ -1313,6 +1360,14 @@ int main(void) {
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
     #endif
+#ifdef USB_CONSOLE_DEBUG
+    // Hold the boot until a terminal opens the port, so nothing is lost
+    // before the host enumerates. The pause lets it finish attaching.
+    while (!stdio_usb_connected()) {
+        sleep_ms(100);
+    }
+    sleep_ms(1000);
+#endif
     DBG_PRINT("\n\n");
     DBG_PRINT("============================================\n");
     DBG_PRINT("  frank-386 - 386 Emulator for RP2350\n");
@@ -1393,6 +1448,10 @@ int main(void) {
             extern void hdmi_set_dma_high_priority(void);
             hdmi_set_dma_high_priority();
             DBG_PRINT("HDMI DMA priority raised\n");
+#ifdef USB_CONSOLE_DEBUG
+            extern void hdmi_debug_report(void);
+            hdmi_debug_report();
+#endif
         }
     }
 
@@ -1401,6 +1460,13 @@ int main(void) {
     if(*(uint32_t*)(0x20000000 + (512ul << 10) - 32) != 0x1927fa52) // magic to fast reboot
         show_welcome_screen();
     DBG_PRINT("Welcome screen done.\n");
+#ifdef USB_CONSOLE_DEBUG
+    extern bool SELECT_VGA;
+    if (!SELECT_VGA) {
+        extern void hdmi_debug_report(void);
+        hdmi_debug_report();
+    }
+#endif
 
     DBG_PRINT("\nStarting emulation...\n");
 

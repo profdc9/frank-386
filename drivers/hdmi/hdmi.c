@@ -13,6 +13,7 @@ static inline unsigned int __rbit(unsigned int x) {
 #include <hardware/dma.h>
 #include <hardware/pio.h>
 #include <pico/time.h>
+#include <pico/stdio.h>
 #include <pico/multicore.h>
 #include <hardware/clocks.h>
 #include "hardware/structs/bus_ctrl.h"
@@ -23,6 +24,15 @@ static inline unsigned int __rbit(unsigned int x) {
 #include "hdmi.h"
 #include "font8x16.h"
 
+#ifdef HDMI_HSTX
+#include "pico_hdmi/video_output.h"
+#include "pico_hdmi/hstx_data_island_queue.h"
+#include "pico_hdmi/hstx_packet.h"
+#include <hardware/sync.h>
+#include "hardware/structs/hstx_fifo.h"
+#endif
+
+#ifndef HDMI_HSTX
 //PIO параметры
 static uint offs_prg0 = 0;
 static uint offs_prg1 = 0;
@@ -30,6 +40,7 @@ static uint offs_prg1 = 0;
 //SM
 static int SM_video = -1;
 static int SM_conv = -1;
+#endif /* !HDMI_HSTX */
 
 //активный видеорежим
 extern int current_mode;  // Default text mode
@@ -74,6 +85,7 @@ extern volatile uint32_t frame_update_request;
 // #define HDMI_HEIGHT 644 //524 Default
 // #define HDMI_HZ 52 //60 Default
 
+#ifndef HDMI_HSTX
 //DMA каналы
 //каналы работы с первичным графическим буфером
 static int dma_chan_ctrl;
@@ -98,6 +110,7 @@ bool required_to_repair_text_pal = false;
 
 //индекс, проверяющий зависание
 static uint32_t irq_inx = 0;
+#endif /* !HDMI_HSTX */
 
 
 //функции и константы HDMI
@@ -107,6 +120,7 @@ static uint32_t irq_inx = 0;
 #define HDMI_CTRL_2 (254)
 #define HDMI_CTRL_3 (255)
 
+#ifndef HDMI_HSTX
 //программа конвертации адреса
 uint16_t pio_program_instructions_conv_HDMI[] = {
     0x80a0, //  0: pull   block
@@ -208,6 +222,7 @@ static void pio_set_x(PIO pio, const int sm, uint32_t v) {
     }
     pio_sm_exec(pio, sm, instr_mov);
 }
+#endif /* !HDMI_HSTX */
 
 static inline void* __not_in_flash_func(nf_memset)(void* ptr, int value, size_t len)
 {
@@ -644,6 +659,18 @@ static void __time_critical_func(render_gfx_line_ega640)(uint32_t line, uint8_t 
 
 void pre_render_line(void);
 static void __time_critical_func(render_line)(uint32_t line, uint8_t *output_buffer) {
+#ifdef HDMI_TEST_PATTERN
+    // Bring-up: 16 vertical colour bars from the palette, in place of every
+    // other source. Each byte carries two 4-bit pixels, so a bar is a
+    // repeated nibble. Tells "no picture reaches the display" apart from
+    // "the emulator is drawing black".
+    for (int i = 0; i < SCREEN_WIDTH; i++) {
+        uint8_t c = (uint8_t)((i * 16) / SCREEN_WIDTH);
+        uint8_t v = (uint8_t)((c << 4) | c);
+        output_buffer[i] = is_hdmi_sync(v) ? (HDMI_CTRL_0 - 1) : v;
+    }
+    return;
+#endif
     // Before emulator init: output black, avoid calling any flash-resident
     // functions that could cause XIP contention with Core 0's BIOS loading.
     if (!vga_state) {
@@ -695,6 +722,7 @@ static void __time_critical_func(render_line)(uint32_t line, uint8_t *output_buf
     nf_memset(output_buffer, 0x77, SCREEN_WIDTH);
 }
 
+#ifndef HDMI_HSTX
 static void __time_critical_func(dma_handler_HDMI)() {
     static uint line = 0;
     irq_inx++;
@@ -1108,9 +1136,306 @@ void graphics_init_hdmi() {
     // Call hdmi_set_dma_high_priority() after BIOS loading is complete.
 }
 
+#ifdef USB_CONSOLE_DEBUG
+/* Is the scanout actually running? A 525-line frame at 60 Hz is about
+ * 31500 line interrupts a second, so expect roughly 3150 in 100 ms. */
+void hdmi_debug_report(void) {
+    const uint32_t a = irq_inx;
+    sleep_ms(100);
+    const uint32_t b = irq_inx;
+    printf("[hdmi] line IRQs in 100 ms: %lu (expect ~3150)\n",
+           (unsigned long)(b - a));
+    printf("[hdmi] sys %lu MHz  active lines %d..%d  mode %d  vga_state %s\n",
+           (unsigned long)(clock_get_hz(clk_sys) / 1000000u),
+           active_start, active_end, current_mode,
+           vga_state ? "set" : "NULL");
+    printf("[hdmi] video SM%d pc %u  conv SM%d pc %u  dma %d xfers left %lu\n",
+           SM_video, (unsigned)pio_sm_get_pc(PIO_VIDEO, SM_video),
+           SM_conv, (unsigned)pio_sm_get_pc(PIO_VIDEO_ADDR, SM_conv),
+           dma_chan, (unsigned long)dma_hw->ch[dma_chan].transfer_count);
+    stdio_flush();
+    sleep_ms(50);
+}
+#endif
+
 void hdmi_set_dma_high_priority(void) {
     hw_set_bits(&dma_hw->ch[dma_chan].ctrl_trig, DMA_CH0_CTRL_TRIG_HIGH_PRIORITY_BITS);
     hw_set_bits(&dma_hw->ch[dma_chan_ctrl].ctrl_trig, DMA_CH0_CTRL_TRIG_HIGH_PRIORITY_BITS);
     hw_set_bits(&dma_hw->ch[dma_chan_pal_conv].ctrl_trig, DMA_CH0_CTRL_TRIG_HIGH_PRIORITY_BITS);
     hw_set_bits(&dma_hw->ch[dma_chan_pal_conv_ctrl].ctrl_trig, DMA_CH0_CTRL_TRIG_HIGH_PRIORITY_BITS);
 }
+#else /* HDMI_HSTX */
+
+/* ------------------------------------------------------------------------
+ * HSTX output.
+ *
+ * The renderers above are unchanged: each fills a line of 320 bytes, two
+ * pixels to a byte, and the table below turns every byte into a pair of
+ * RGB565 pixels for the HSTX TMDS encoder (pico_hdmi). The table keeps the
+ * layout the PIO driver used - entry i at conv_color[i * 4], the whole
+ * array swapped with conv_color2 by the OSD - so code outside this file
+ * that saves, swaps and restores palettes does not need to know which
+ * output it is feeding.
+ *
+ * pico_hdmi calls the scanline callback from the DMA interrupt with only a
+ * few microseconds to spare, far too little for a text or EGA line. So the
+ * lines are rendered a few ahead of the beam into a small ring, by an
+ * interrupt of their own, and the callback only does the table lookup.
+ * --------------------------------------------------------------------- */
+uint32_t conv_color[1224];
+uint32_t conv_color2[1024]; // backup to fast restore palette
+bool required_to_repair_text_pal = false;
+
+static inline uint32_t rgb888_to_565(uint8_t r, uint8_t g, uint8_t b) {
+    return ((uint32_t)(r & 0xf8) << 8) | ((uint32_t)(g & 0xfc) << 3) | (b >> 3);
+}
+
+/* One index, one colour, shown on both pixels of the byte. */
+void __time_critical_func(graphics_set_palette_hdmi)(const uint8_t R, const uint8_t G, const uint8_t B, uint8_t i) {
+    if (is_hdmi_sync(i)) return;
+    const uint32_t px = rgb888_to_565(R, G, B);
+    conv_color[i * 4] = px | (px << 16);
+}
+
+/* One index, two colours: the first pixel in the low half. */
+void graphics_set_palette_hdmi2(
+    const uint8_t R1, const uint8_t G1, const uint8_t B1,
+    const uint8_t R2, const uint8_t G2, const uint8_t B2,
+    uint8_t i
+) {
+    if (is_hdmi_sync(i)) return;
+    conv_color[i * 4] = rgb888_to_565(R1, G1, B1) | (rgb888_to_565(R2, G2, B2) << 16);
+}
+
+/* Four lines are enough: a line is only rendered once the line four back
+ * has been shown. */
+#define HSTX_RING 4
+static uint8_t hstx_ring[HSTX_RING][SCREEN_WIDTH] __attribute__((aligned(4)));
+static volatile uint32_t hstx_render_idx;    /* lines rendered this frame      */
+static volatile uint32_t hstx_consumed_idx;  /* lines handed to the display    */
+static volatile uint32_t hstx_frame_seq;     /* bumped when a frame is armed   */
+static volatile int      hstx_first;         /* active window, latched at 41   */
+static volatile int      hstx_lines;
+static volatile uint32_t hstx_underruns;     /* lines shown before they were ready */
+static uint hstx_render_irq;                 /* software-triggered, see below      */
+static volatile bool hstx_render_irq_ready;  /* handler installed and enabled      */
+static volatile uint32_t hstx_frame_us;      /* measured frame period              */
+static volatile uint32_t hstx_lines_per_frame;
+
+#define HSTX_FIRST_ACTIVE (MODE_V_TOTAL_LINES - MODE_V_ACTIVE_LINES)
+/* Where the PIO driver sampled the CRTC: just before the first line. */
+#define HSTX_SNAPSHOT_LINE (HSTX_FIRST_ACTIVE - 4)
+#define HSTX_ARM_LINE      (HSTX_FIRST_ACTIVE - 3)
+
+static void __time_critical_func(hstx_scanline_cb)(uint32_t v_scanline, uint32_t active_line, uint32_t *dst) {
+    (void)v_scanline;
+    const int rel = (int)active_line - hstx_first;
+    if (rel < 0 || rel >= hstx_lines) {
+        const uint32_t black = conv_color[0];
+        for (int i = 0; i < SCREEN_WIDTH; i++) dst[i] = black;
+        return;
+    }
+    if ((uint32_t)rel < hstx_render_idx) {
+        const uint32_t *src = (const uint32_t *)hstx_ring[rel & (HSTX_RING - 1)];
+        for (int i = 0; i < SCREEN_WIDTH / 4; i++) {
+            const uint32_t w = src[i];
+            dst[i * 4 + 0] = conv_color[(w & 0xff) * 4];
+            dst[i * 4 + 1] = conv_color[((w >> 8) & 0xff) * 4];
+            dst[i * 4 + 2] = conv_color[((w >> 16) & 0xff) * 4];
+            dst[i * 4 + 3] = conv_color[(w >> 24) * 4];
+        }
+    } else {
+        /* Not rendered in time: leave the previous line in the buffer
+         * rather than show half of a stale one. */
+        hstx_underruns++;
+    }
+    hstx_consumed_idx = (uint32_t)rel + 1;
+    if (hstx_render_irq_ready) irq_set_pending(hstx_render_irq);
+}
+
+/* The PIO driver's interrupt did this per line; the same duties, at the
+ * same points of the frame, from pico_hdmi's per-scanline callback. */
+static void __time_critical_func(hstx_line_cb)(uint32_t v_scanline) {
+    static uint32_t last_us, lines;
+    lines++;
+    if (v_scanline == 0) {
+        const uint32_t now = time_us_32();
+        hstx_frame_us = now - last_us;
+        last_us = now;
+        hstx_lines_per_frame = lines;
+        lines = 0;
+        /* End of the picture: vertical retrace begins. */
+        if (vga_state) {
+            vga_state->st01 |=  ST01_V_RETRACE;
+            vga_state->st01 &= ~ST01_DISP_ENABLE;
+        }
+        frame_update_request = 1;
+    } else if (v_scanline == HSTX_SNAPSHOT_LINE) {
+        /* Late in vblank, just before the first line is needed: latch the
+         * CRTC start address, panning and line compare for this frame. */
+        if (vga_state) {
+            const uint8_t *cr = vga_state->cr;
+            frame_vram_offset = (uint16_t)((cr[0x0c] << 8) | cr[0x0d]);
+            frame_pixel_panning = vga_state->ar[0x13] & 0x07;
+            int lc = (int)cr[0x18]
+                   | (((int)cr[0x07] & 0x10) << 4)
+                   | (((int)cr[0x09] & 0x40) << 3);
+            frame_line_compare = (lc > 0 && lc < 480) ? lc : -1;
+        }
+        int first = active_start;
+        int last = active_end;
+        if (first < 0) first = 0;
+        if (last > MODE_V_ACTIVE_LINES) last = MODE_V_ACTIVE_LINES;
+        hstx_first = first;
+        hstx_lines = (last > first) ? (last - first) : 0;
+    } else if (v_scanline == HSTX_ARM_LINE) {
+        /* Retrace ends; start rendering the new frame. */
+        if (vga_state) {
+            vga_state->st01 &= ~ST01_V_RETRACE;
+            vga_state->st01 |=  ST01_DISP_ENABLE;
+        }
+        hstx_frame_seq++;
+        hstx_render_idx = 0;
+        hstx_consumed_idx = 0;
+        if (hstx_render_irq_ready) irq_set_pending(hstx_render_irq);
+    }
+}
+
+/* Render lines ahead of the beam. Runs in a software-triggered interrupt on
+ * core 1, below the video DMA interrupt and above the audio timer, raised by
+ * the scanline callbacks. Core 1's main loop is too slow and too busy to do
+ * this: a line has to be ready every 32 us. */
+static void __time_critical_func(hstx_prerender)(void) {
+    for (;;) {
+        const uint32_t seq = hstx_frame_seq;
+        uint32_t r = hstx_render_idx;
+        const uint32_t c = hstx_consumed_idx;
+        if (r < c) r = c;                         /* fell behind: skip what was shown */
+        if ((int)r >= hstx_lines || r >= c + HSTX_RING) return;
+        render_line(r, hstx_ring[r & (HSTX_RING - 1)]);
+        const uint32_t irq = save_and_disable_interrupts();
+        if (seq == hstx_frame_seq) hstx_render_idx = r + 1;
+        restore_interrupts(irq);
+    }
+}
+
+/* CGA 16 colours as pairs, indices 0-255 (high nibble first pixel). */
+static void hstx_default_palette(void) {
+    /* 6-bit RRGGBB, as in the VGA DAC. */
+    static const uint8_t cga_colors[16][3] = {
+        { 0,  0,  0}, { 0,  0, 42}, { 0, 42,  0}, { 0, 42, 42},
+        {42,  0,  0}, {42,  0, 42}, {42, 21,  0}, {42, 42, 42},
+        {21, 21, 21}, {21, 21, 63}, {21, 63, 21}, {21, 63, 63},
+        {63, 21, 21}, {63, 21, 63}, {63, 63, 21}, {63, 63, 63},
+    };
+    for (int c1 = 0; c1 < 16; ++c1) {
+        for (int c2 = 0; c2 < 16; ++c2) {
+            graphics_set_palette_hdmi2(
+                cga_colors[c1][0] << 2, cga_colors[c1][1] << 2, cga_colors[c1][2] << 2,
+                cga_colors[c2][0] << 2, cga_colors[c2][1] << 2, cga_colors[c2][2] << 2,
+                c1 << 4 | c2);
+        }
+    }
+    memcpy(conv_color2, conv_color, 1024 * 4);
+}
+
+#ifdef HDMI_HSTX_NOOP
+/* Bisect: the driver and nothing else. A callback that does no more than
+ * fill the line with one colour, and none of the rendering machinery. */
+static void __time_critical_func(hstx_noop_cb)(uint32_t v_scanline, uint32_t active_line, uint32_t *dst) {
+    (void)v_scanline; (void)active_line;
+    for (int i = 0; i < SCREEN_WIDTH; i++) dst[i] = 0x07e007e0;   /* green */
+}
+#endif
+
+void graphics_init_hdmi() {
+    hstx_default_palette();
+
+#if defined(HDMI_HSTX_NOOP) && HDMI_HSTX_NOOP == 1
+    video_output_set_scanline_callback(hstx_noop_cb);
+#elif defined(HDMI_HSTX_NOOP) && HDMI_HSTX_NOOP == 2
+    video_output_set_scanline_callback(hstx_noop_cb);
+    video_output_set_line_callback(hstx_line_cb);
+#elif defined(HDMI_HSTX_NOOP) && HDMI_HSTX_NOOP == 3
+    video_output_set_scanline_callback(hstx_scanline_cb);
+    video_output_set_line_callback(hstx_line_cb);
+#else
+    hstx_render_irq = user_irq_claim_unused(true);
+    irq_set_exclusive_handler(hstx_render_irq, hstx_prerender);
+    irq_set_priority(hstx_render_irq, 0x40);
+    irq_set_enabled(hstx_render_irq, true);
+    hstx_render_irq_ready = true;
+
+    video_output_set_scanline_callback(hstx_scanline_cb);
+    video_output_set_line_callback(hstx_line_cb);
+#endif
+    video_output_init(MODE_H_ACTIVE_PIXELS, MODE_V_ACTIVE_LINES);
+
+    /* Even with no audio the data-island scheduler has to be initialised:
+     * the dispatcher pulls from its queue every vblank. */
+    hstx_di_queue_init();
+    pico_hdmi_set_audio_sample_rate(48000);
+
+    /* HSTX, DMA and the DMA interrupt come up on this core - core 1 - as
+     * the PIO driver's did. */
+    video_output_start();
+}
+
+void hdmi_set_dma_high_priority(void) {
+#ifdef USB_CONSOLE_DEBUG
+    extern void video_output_debug_rate(const char *);
+    video_output_debug_rate("before priority");
+#endif
+    video_output_set_dma_priority();
+#ifdef USB_CONSOLE_DEBUG
+    video_output_debug_rate("after priority");
+#endif
+}
+
+#ifdef USB_CONSOLE_DEBUG
+/* One line of running totals; the caller prints it every couple of seconds. */
+void hdmi_hstx_status(void) {
+    extern volatile uint32_t video_irq_starved;
+    static uint32_t f_prev, u_prev, m_prev;
+    const uint32_t f = video_frame_count, u = hstx_underruns, m = video_irq_starved;
+    printf("[run] frames +%lu  line underruns +%lu  missed deadlines +%lu   (totals %lu / %lu / %lu)\n",
+           (unsigned long)(f - f_prev), (unsigned long)(u - u_prev), (unsigned long)(m - m_prev),
+           (unsigned long)f, (unsigned long)u, (unsigned long)m);
+    f_prev = f; u_prev = u; m_prev = m;
+}
+
+void hdmi_debug_report(void) {
+    extern volatile uint32_t video_irq_count;
+    const uint32_t f0 = video_frame_count;
+    const uint32_t u0 = hstx_underruns;
+    const uint32_t i0 = video_irq_count;
+    sleep_ms(500);
+    printf("[hdmi/hstx] DMA IRQs in 500 ms: %lu  (%lu per frame, expect ~1005)  fifo stat 0x%08lx\n",
+           (unsigned long)(video_irq_count - i0),
+           (unsigned long)((video_irq_count - i0) / (video_frame_count - f0 ? video_frame_count - f0 : 1)),
+           (unsigned long)hstx_fifo_hw->stat);
+    printf("[hdmi/hstx] frames in 500 ms: %lu (expect ~30)  underruns: %lu\n",
+           (unsigned long)(video_frame_count - f0),
+           (unsigned long)(hstx_underruns - u0));
+    printf("[hdmi/hstx] frame period %lu us (expect ~16683)  scanline callbacks/frame %lu (expect 525)\n",
+           (unsigned long)hstx_frame_us, (unsigned long)hstx_lines_per_frame);
+    printf("[hdmi/hstx] sys %lu MHz  clk_hstx %lu Hz  window %d+%d  mode %d  vga_state %s\n",
+           (unsigned long)(clock_get_hz(clk_sys) / 1000000u),
+           (unsigned long)clock_get_hz(clk_hstx),
+           hstx_first, hstx_lines, current_mode,
+           vga_state ? "set" : "NULL");
+    extern void video_output_debug_dump(void);
+    extern void video_output_debug_speed_test(void);
+    video_output_debug_dump();
+    /* What the hardware is really doing, not what was asked for. */
+    printf("[hdmi/hstx] measured clk_hstx %lu kHz  clk_sys %lu kHz  hstx div reg 0x%08lx  ctrl 0x%08lx\n",
+           (unsigned long)frequency_count_khz(CLOCKS_FC0_SRC_VALUE_CLK_HSTX),
+           (unsigned long)frequency_count_khz(CLOCKS_FC0_SRC_VALUE_CLK_SYS),
+           (unsigned long)clocks_hw->clk[clk_hstx].div,
+           (unsigned long)clocks_hw->clk[clk_hstx].ctrl);
+    stdio_flush();
+    sleep_ms(50);
+}
+#endif
+
+#endif /* HDMI_HSTX */

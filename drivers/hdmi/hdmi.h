@@ -35,6 +35,11 @@ extern "C" {
 #endif
 
 void hdmi_set_dma_high_priority(void);
+#ifdef HDMI_HSTX
+#endif
+#ifdef USB_CONSOLE_DEBUG
+void hdmi_debug_report(void);
+#endif
 
 #define TEXTMODE_COLS 53
 #define TEXTMODE_ROWS 30

@@ -75,6 +75,16 @@ option(FORCE_VGA "Force VGA output instead of HDMI" OFF)
 # Debug output (disabled by default for cleaner console)
 option(DEBUG_ENABLED "Enable verbose debug output" OFF)
 
+# Bring-up console over USB CDC. Implies debug output on and USB HID host
+# off (the one USB controller cannot be both). Boot waits for a terminal to
+# attach, and every DBG_PRINT is flushed and followed by a short pause, so
+# the last line before a crash or hang reaches the host.
+option(USB_CONSOLE_DEBUG "USB CDC debug console with flush/delay per message" OFF)
+if(USB_CONSOLE_DEBUG)
+    set(USB_HID_ENABLED OFF CACHE BOOL "USB HID host" FORCE)
+    set(DEBUG_ENABLED ON CACHE BOOL "Enable verbose debug output" FORCE)
+endif()
+
 # Profiling (for performance analysis)
 option(PROFILE_ENABLED "Enable i386 instruction profiling" OFF)
 
@@ -384,6 +394,39 @@ target_compile_definitions(${BUILD_NAME} PRIVATE
 # Add DEBUG_ENABLED if enabled
 if(DEBUG_ENABLED)
     target_compile_definitions(${BUILD_NAME} PRIVATE DEBUG_ENABLED=1)
+    # vga_hw.c's video-init messages live in this library.
+    target_compile_definitions(video_driver PRIVATE DEBUG_ENABLED=1)
+endif()
+
+if(USB_CONSOLE_DEBUG)
+    target_compile_definitions(${BUILD_NAME} PRIVATE USB_CONSOLE_DEBUG=1)
+    target_compile_definitions(video_driver PRIVATE USB_CONSOLE_DEBUG=1)
+endif()
+
+# HDMI from the RP2350 HSTX peripheral (GP12-19) instead of PIO. See
+# drivers/pico_hdmi and the HDMI_HSTX half of drivers/hdmi/hdmi.c.
+option(HDMI_HSTX "Drive HDMI from the HSTX instead of PIO" OFF)
+if(HDMI_HSTX)
+    target_sources(video_driver PRIVATE
+        drivers/pico_hdmi/video_output.c
+        drivers/pico_hdmi/hstx_packet.c
+        drivers/pico_hdmi/hstx_data_island_queue.c
+    )
+    target_include_directories(video_driver PUBLIC drivers)
+    target_compile_definitions(video_driver PUBLIC HDMI_HSTX=1)
+    target_link_libraries(video_driver hardware_gpio hardware_irq)
+    # Bisect stages: 1 constant-colour callback only; 2 plus the per-line
+    # callback; 3 the real scanline callback too, render interrupt still off.
+    set(HDMI_HSTX_NOOP "0" CACHE STRING "HSTX bisect stage (0 = full path)")
+    if(HDMI_HSTX_NOOP GREATER 0)
+        target_compile_definitions(video_driver PRIVATE HDMI_HSTX_NOOP=${HDMI_HSTX_NOOP})
+    endif()
+endif()
+
+# Bring-up: replace all HDMI video with colour bars (see drivers/hdmi/hdmi.c).
+option(HDMI_TEST_PATTERN "Show HDMI colour bars instead of emulator video" OFF)
+if(HDMI_TEST_PATTERN)
+    target_compile_definitions(video_driver PRIVATE HDMI_TEST_PATTERN=1)
 endif()
 
 # Force HDMI output

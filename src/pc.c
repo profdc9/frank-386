@@ -1021,6 +1021,13 @@ static void cdrom_change_notify(int drivenum, const char *filename, int was_pres
     ide_change_cd(ide, ide_drive, f, was_present);
 }
 
+#if defined(USB_CONSOLE_DEBUG) && defined(HDMI_HSTX)
+extern void video_output_debug_rate(const char *);
+#define PCMARK(l) video_output_debug_rate(l)
+#else
+#define PCMARK(l) ((void)0)
+#endif
+
 PC *pc_new(SimpleFBDrawFunc *redraw, void (*poll)(void *), void *redraw_data,
 	   u8 *fb, PCConfig *conf)
 {
@@ -1031,6 +1038,7 @@ PC *pc_new(SimpleFBDrawFunc *redraw, void (*poll)(void *), void *redraw_data,
     char *mem = (uint8_t*)0x11000000;
 	CPU_CB *cb = NULL;
 	memset(mem, 0, conf->mem_size);
+	PCMARK("after 8MB mem clear");
 #ifdef BUILD_ESP32
 	extern char *pcram;
 	extern long pcram_len;
@@ -1129,6 +1137,7 @@ PC *pc_new(SimpleFBDrawFunc *redraw, void (*poll)(void *), void *redraw_data,
 //	cmos_update_checksum(pc->cmos);
 
 	int piix3_devfn;
+	PCMARK("before pci devices");
 	pc->i440fx = i440fx_init(&pc->pcibus, &piix3_devfn);
 	pc->pci_ide = piix3_ide_init(pc->pcibus, piix3_devfn + 1);
 
@@ -1162,6 +1171,7 @@ PC *pc_new(SimpleFBDrawFunc *redraw, void (*poll)(void *), void *redraw_data,
 			   fb, conf->width, conf->height);
 	vga_set_force_8dm(pc->vga, conf->vga_force_8dm);
 	pc->pci_vga = vga_pci_init(pc->vga, pc->pcibus, pc, set_pci_vga_bar);
+	PCMARK("after vga_init");
 	pc->pci_vga_ram_addr = -1;
 	disk_set_vga(pc->vga);
 
@@ -1192,6 +1202,7 @@ PC *pc_new(SimpleFBDrawFunc *redraw, void (*poll)(void *), void *redraw_data,
 			       pc, pc_reset_request);
 	i8042_set_cpu(pc->cpu);
 	pc->adlib = adlib_new();
+	PCMARK("after adlib_new");
 	/* NE2000 networking removed */
 	pc->isa_dma = i8257_new(pc->phys_mem, pc->phys_mem_size,
 				0x00, 0x80, 0x480, 0);
@@ -1211,6 +1222,7 @@ PC *pc_new(SimpleFBDrawFunc *redraw, void (*poll)(void *), void *redraw_data,
 			    pc->isa_dma, pc->isa_hdma,
 			    pc->pic, set_irq);
 	pc->pcspk = pcspk_init(pc->pit);
+	PCMARK("after sb16+pcspk");
 	sn76489_reset();
 
 	// Audio/mouse enable flags default to enabled

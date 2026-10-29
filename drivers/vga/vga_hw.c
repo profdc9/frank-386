@@ -1059,6 +1059,9 @@ static void __isr __time_critical_func(dma_handler_vga)(void) {
 // ============================================================================
 int testPins(uint32_t pin0, uint32_t pin1);
 void graphics_init_hdmi();
+#ifdef HDMI_HSTX
+#include "pico_hdmi/video_output.h"
+#endif
 // From main.c — needed for safe flash access at high clock speeds
 extern void set_flash_timings(int cpu_mhz, int cfg_flash);
 
@@ -1085,6 +1088,20 @@ static void hdmi_boost_clock(void) {
 
 /* Recalculate and apply VGA PIO clock divider after a sysclk change. */
 void vga_hw_reclock(void) {
+#ifdef HDMI_HSTX
+    /* clk_hstx hangs off clk_sys, so it has to follow it. */
+    if (!SELECT_VGA) {
+#ifdef USB_CONSOLE_DEBUG
+        extern void video_output_debug_rate(const char *);
+        video_output_debug_rate("before reclock");
+#endif
+        video_output_reclock();
+#ifdef USB_CONSOLE_DEBUG
+        video_output_debug_rate("after reclock");
+#endif
+        return;
+    }
+#endif
     if (!SELECT_VGA) return;
     float clk_div = (float)clock_get_hz(clk_sys) / VGA_CLK;
     uint32_t div_int  = (uint32_t)clk_div;
@@ -1139,7 +1156,12 @@ void vga_hw_init(void) {
     #endif
     DBG_PRINT("  Video output: %s\n", SELECT_VGA ? "VGA" : "HDMI");
     if (!SELECT_VGA) {
+#ifndef HDMI_HSTX
+        /* The PIO driver wants exactly 252 MHz from the PIO divider. HSTX
+         * only wants clk_sys to be a multiple of 126 MHz, which every CPU
+         * speed this firmware offers is. */
         hdmi_boost_clock();
+#endif
         graphics_init_hdmi();
         return;
     }
