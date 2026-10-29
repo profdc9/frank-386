@@ -10,6 +10,14 @@
 
 #pragma GCC optimize("Ofast")
 
+#if defined(__GNUC__) && __GNUC__ < 14
+/* GCC before 14 has no __rbit; RP2350 (Cortex-M33) has the instruction. */
+static inline unsigned int __rbit(unsigned int x) {
+    unsigned int r;
+    __asm volatile ("rbit %0, %1" : "=r"(r) : "r"(x));
+    return r;
+}
+#endif
 #include "vga_hw.h"
 #include "vga_osd.h"
 #include "font8x16.h"
