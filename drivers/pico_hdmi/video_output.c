@@ -30,8 +30,6 @@
 #include "hardware/structs/clocks.h"
 #include "hardware/structs/hstx_ctrl.h"
 #include "hardware/structs/hstx_fifo.h"
-#include "hardware/structs/io_bank0.h"
-#include "hardware/structs/pads_bank0.h"
 
 #include <math.h>
 #include <string.h>
@@ -375,38 +373,6 @@ static inline void __scratch_x("") video_output_handle_active_data(dma_channel_h
 volatile uint32_t video_irq_count;
 volatile uint32_t video_irq_starved;   /* entered with the other channel already idle */
 
-/* How long does the HSTX really take per pixel slot? Stop the video, feed it
- * RAW_REPEAT commands by hand and time how fast it takes them. 4000 slots at
- * 5 clk_hstx cycles of 126 MHz is 158.7 us a command if the clocking is what
- * the registers say. Leaves the video dead; debug only. */
-void video_output_debug_speed_test(void)
-{
-    irq_set_enabled(DMA_IRQ_0, false);
-    dma_channel_abort(dmach_ping);
-    dma_channel_abort(dmach_pong);
-    hstx_ctrl_hw->csr &= ~HSTX_CTRL_CSR_EN_BITS;
-    busy_wait_us_32(10);
-    hstx_ctrl_hw->csr |= HSTX_CTRL_CSR_EN_BITS;
-    const int sets = 24;
-    uint32_t t0 = time_us_32();
-    for (int i = 0; i < sets; i++) {
-        uint32_t w[3] = {HSTX_CMD_RAW_REPEAT | 4000, SYNC_V1_H1, HSTX_CMD_NOP};
-        for (int k = 0; k < 3; k++) {
-            while (hstx_fifo_hw->stat & (1u << 8)) tight_loop_contents();
-            hstx_fifo_hw->fifo = w[k];
-        }
-    }
-    uint32_t t1 = time_us_32();
-    /* about 3 sets are still queued when the last word goes in */
-    printf("[hstx] speed test: %d commands of 4000 slots in %lu us -> %lu.%02lu us each (158.73 expected)\n",
-           sets, (unsigned long)(t1 - t0),
-           (unsigned long)((t1 - t0) / (sets - 3)),
-           (unsigned long)(((t1 - t0) * 100 / (sets - 3)) % 100));
-    printf("[hstx] clk_hstx %lu kHz  csr 0x%08lx\n",
-           (unsigned long)frequency_count_khz(CLOCKS_FC0_SRC_VALUE_CLK_HSTX),
-           (unsigned long)hstx_ctrl_hw->csr);
-}
-
 /* Frames the scanout produced in 200 ms: 12 at 60 Hz. */
 void video_output_debug_rate(const char *label)
 {
@@ -415,57 +381,6 @@ void video_output_debug_rate(const char *label)
     printf("[mark] %-22s %lu frames in 200 ms (12 = 60 Hz)   missed deadlines so far: %lu\n", label,
            (unsigned long)(video_frame_count - f0), (unsigned long)video_irq_starved);
     stdio_flush();
-}
-
-void video_output_debug_dump(void)
-{
-    /* Are the HSTX pins actually toggling? Sample them as the chip sees them. */
-    {
-        unsigned highs[8] = {0};
-        for (int n = 0; n < 4000; n++) {
-            uint32_t in = sio_hw->gpio_in >> 12;
-            for (int b = 0; b < 8; b++) highs[b] += (in >> b) & 1;
-        }
-        printf("[hstx] pin probe, 4000 samples, count high: GP12 %u GP13 %u GP14 %u GP15 %u GP16 %u GP17 %u GP18 %u GP19 %u\n",
-               highs[0], highs[1], highs[2], highs[3], highs[4], highs[5], highs[6], highs[7]);
-    }
-    printf("[dump] csr %08lx exp_tmds %08lx exp_shift %08lx\n",
-           (unsigned long)hstx_ctrl_hw->csr, (unsigned long)hstx_ctrl_hw->expand_tmds,
-           (unsigned long)hstx_ctrl_hw->expand_shift);
-    for (int i = 0; i < 8; i++)
-        printf("[dump] bit%d %08lx\n", i, (unsigned long)hstx_ctrl_hw->bit[i]);
-    printf("[dump] clk_hstx ctrl %08lx div %08lx  clk_sys ctrl %08lx div %08lx\n",
-           (unsigned long)clocks_hw->clk[clk_hstx].ctrl, (unsigned long)clocks_hw->clk[clk_hstx].div,
-           (unsigned long)clocks_hw->clk[clk_sys].ctrl, (unsigned long)clocks_hw->clk[clk_sys].div);
-    for (int g = 12; g <= 19; g++)
-        printf("[dump] gpio%d ctrl %08lx pad %08lx\n", g,
-               (unsigned long)io_bank0_hw->io[g].ctrl, (unsigned long)pads_bank0_hw->io[g]);
-    printf("[dump] bus priority %08lx  fifo stat %08lx\n",
-           (unsigned long)bus_ctrl_hw->priority, (unsigned long)hstx_fifo_hw->stat);
-
-    printf("[hstx] ping ch%u ctrl 0x%08lx cnt %lu   pong ch%u ctrl 0x%08lx cnt %lu\n",
-           dmach_ping, (unsigned long)dma_hw->ch[dmach_ping].ctrl_trig,
-           (unsigned long)dma_hw->ch[dmach_ping].transfer_count,
-           dmach_pong, (unsigned long)dma_hw->ch[dmach_pong].ctrl_trig,
-           (unsigned long)dma_hw->ch[dmach_pong].transfer_count);
-    printf("[hstx] csr 0x%08lx  expand_tmds 0x%08lx  expand_shift 0x%08lx\n",
-           (unsigned long)hstx_ctrl_hw->csr, (unsigned long)hstx_ctrl_hw->expand_tmds,
-           (unsigned long)hstx_ctrl_hw->expand_shift);
-    unsigned full = 0, empty = 0, wof = 0, lvl[10] = {0};
-    hstx_fifo_hw->stat = 1u << 10;      /* clear the sticky write-overflow flag */
-    busy_wait_us_32(2000);
-    printf("[hstx] after clearing and 2 ms: stat 0x%08lx (bit 10 = overflowed again)\n",
-           (unsigned long)hstx_fifo_hw->stat);
-    for (int i = 0; i < 200; i++) {
-        uint32_t st = hstx_fifo_hw->stat;
-        full += (st >> 8) & 1;
-        empty += (st >> 9) & 1;
-        wof += (st >> 10) & 1;
-        lvl[(st & 0xff) > 9 ? 9 : (st & 0xff)]++;
-        busy_wait_us_32(7);
-    }
-    printf("[hstx] 200 FIFO samples: full %u empty %u wof %u  level histogram 0..8: %u %u %u %u %u %u %u %u %u\n",
-           full, empty, wof, lvl[0], lvl[1], lvl[2], lvl[3], lvl[4], lvl[5], lvl[6], lvl[7], lvl[8]);
 }
 #endif
 

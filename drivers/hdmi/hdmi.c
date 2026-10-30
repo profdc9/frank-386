@@ -660,18 +660,6 @@ static void __time_critical_func(render_gfx_line_ega640)(uint32_t line, uint8_t 
 
 void pre_render_line(void);
 static void __time_critical_func(render_line)(uint32_t line, uint8_t *output_buffer) {
-#ifdef HDMI_TEST_PATTERN
-    // Bring-up: 16 vertical colour bars from the palette, in place of every
-    // other source. Each byte carries two 4-bit pixels, so a bar is a
-    // repeated nibble. Tells "no picture reaches the display" apart from
-    // "the emulator is drawing black".
-    for (int i = 0; i < SCREEN_WIDTH; i++) {
-        uint8_t c = (uint8_t)((i * 16) / SCREEN_WIDTH);
-        uint8_t v = (uint8_t)((c << 4) | c);
-        output_buffer[i] = is_hdmi_sync(v) ? (HDMI_CTRL_0 - 1) : v;
-    }
-    return;
-#endif
     // Before emulator init: output black, avoid calling any flash-resident
     // functions that could cause XIP contention with Core 0's BIOS loading.
     if (!vga_state) {
@@ -1346,27 +1334,9 @@ static void hstx_default_palette(void) {
     memcpy(conv_color2, conv_color, 1024 * 4);
 }
 
-#ifdef HDMI_HSTX_NOOP
-/* Bisect: the driver and nothing else. A callback that does no more than
- * fill the line with one colour, and none of the rendering machinery. */
-static void __time_critical_func(hstx_noop_cb)(uint32_t v_scanline, uint32_t active_line, uint32_t *dst) {
-    (void)v_scanline; (void)active_line;
-    for (int i = 0; i < SCREEN_WIDTH; i++) dst[i] = 0x07e007e0;   /* green */
-}
-#endif
-
 void graphics_init_hdmi() {
     hstx_default_palette();
 
-#if defined(HDMI_HSTX_NOOP) && HDMI_HSTX_NOOP == 1
-    video_output_set_scanline_callback(hstx_noop_cb);
-#elif defined(HDMI_HSTX_NOOP) && HDMI_HSTX_NOOP == 2
-    video_output_set_scanline_callback(hstx_noop_cb);
-    video_output_set_line_callback(hstx_line_cb);
-#elif defined(HDMI_HSTX_NOOP) && HDMI_HSTX_NOOP == 3
-    video_output_set_scanline_callback(hstx_scanline_cb);
-    video_output_set_line_callback(hstx_line_cb);
-#else
     hstx_render_irq = user_irq_claim_unused(true);
     irq_set_exclusive_handler(hstx_render_irq, hstx_prerender);
     irq_set_priority(hstx_render_irq, 0x40);
@@ -1375,7 +1345,6 @@ void graphics_init_hdmi() {
 
     video_output_set_scanline_callback(hstx_scanline_cb);
     video_output_set_line_callback(hstx_line_cb);
-#endif
     video_output_init(MODE_H_ACTIVE_PIXELS, MODE_V_ACTIVE_LINES);
 
     /* Even with no audio the data-island scheduler has to be initialised:
@@ -1431,9 +1400,6 @@ void hdmi_debug_report(void) {
            (unsigned long)clock_get_hz(clk_hstx),
            hstx_first, hstx_lines, current_mode,
            vga_state ? "set" : "NULL");
-    extern void video_output_debug_dump(void);
-    extern void video_output_debug_speed_test(void);
-    video_output_debug_dump();
     /* What the hardware is really doing, not what was asked for. */
     printf("[hdmi/hstx] measured clk_hstx %lu kHz  clk_sys %lu kHz  hstx div reg 0x%08lx  ctrl 0x%08lx\n",
            (unsigned long)frequency_count_khz(CLOCKS_FC0_SRC_VALUE_CLK_HSTX),

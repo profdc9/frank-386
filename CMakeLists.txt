@@ -421,18 +421,6 @@ if(HDMI_HSTX)
     target_include_directories(video_driver PUBLIC drivers)
     target_compile_definitions(video_driver PUBLIC HDMI_HSTX=1)
     target_link_libraries(video_driver hardware_gpio hardware_irq)
-    # Bisect stages: 1 constant-colour callback only; 2 plus the per-line
-    # callback; 3 the real scanline callback too, render interrupt still off.
-    set(HDMI_HSTX_NOOP "0" CACHE STRING "HSTX bisect stage (0 = full path)")
-    if(HDMI_HSTX_NOOP GREATER 0)
-        target_compile_definitions(video_driver PRIVATE HDMI_HSTX_NOOP=${HDMI_HSTX_NOOP})
-    endif()
-endif()
-
-# Bring-up: replace all HDMI video with colour bars (see drivers/hdmi/hdmi.c).
-option(HDMI_TEST_PATTERN "Show HDMI colour bars instead of emulator video" OFF)
-if(HDMI_TEST_PATTERN)
-    target_compile_definitions(video_driver PRIVATE HDMI_TEST_PATTERN=1)
 endif()
 
 # Force HDMI output
