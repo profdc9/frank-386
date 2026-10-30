@@ -23,6 +23,7 @@ static inline unsigned int __rbit(unsigned int x) {
 #include "vga_osd.h"
 #include "hdmi.h"
 #include "font8x16.h"
+#include "hardware/structs/nvic.h"
 
 #ifdef HDMI_HSTX
 #include "pico_hdmi/video_output.h"
@@ -506,7 +507,7 @@ static void __time_critical_func(render_gfx_line_cga2)(uint32_t line, uint8_t *o
 extern uint32_t spread8_lut[256];
 
 // Merge 4 plane bytes [P3|P2|P1|P0] into 8 nibbles (pixel color indices).
-static inline uint32_t ega_pack8_from_planes(const uint32_t ega_planes) {
+static inline __attribute__((always_inline)) uint32_t ega_pack8_from_planes(const uint32_t ega_planes) {
     return
      spread8_lut[(uint8_t)ega_planes] |
      spread8_lut[(uint8_t)(ega_planes >> 8)] << 1 |
@@ -1210,6 +1211,12 @@ void graphics_set_palette_hdmi2(
 /* Four lines are enough: a line is only rendered once the line four back
  * has been shown. */
 #define HSTX_RING 4
+
+/* irq_set_pending() is a flash function; calling it from the per-scanline callbacks put an XIP fetch in the
+ * deadline path. This writes the NVIC register directly and is inlined into the RAM callbacks. */
+static inline __attribute__((always_inline)) void hstx_irq_set_pending(uint irq) {
+    nvic_hw->ispr[irq >> 5] = 1u << (irq & 31);
+}
 static uint8_t hstx_ring[HSTX_RING][SCREEN_WIDTH] __attribute__((aligned(4)));
 static volatile uint32_t hstx_render_idx;    /* lines rendered this frame      */
 static volatile uint32_t hstx_consumed_idx;  /* lines handed to the display    */
@@ -1250,7 +1257,7 @@ static void __time_critical_func(hstx_scanline_cb)(uint32_t v_scanline, uint32_t
         hstx_underruns++;
     }
     hstx_consumed_idx = (uint32_t)rel + 1;
-    if (hstx_render_irq_ready) irq_set_pending(hstx_render_irq);
+    if (hstx_render_irq_ready) hstx_irq_set_pending(hstx_render_irq);
 }
 
 /* The PIO driver's interrupt did this per line; the same duties, at the
@@ -1297,7 +1304,7 @@ static void __time_critical_func(hstx_line_cb)(uint32_t v_scanline) {
         hstx_frame_seq++;
         hstx_render_idx = 0;
         hstx_consumed_idx = 0;
-        if (hstx_render_irq_ready) irq_set_pending(hstx_render_irq);
+        if (hstx_render_irq_ready) hstx_irq_set_pending(hstx_render_irq);
     }
 }
 

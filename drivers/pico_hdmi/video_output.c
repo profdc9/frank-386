@@ -307,6 +307,7 @@ static inline void __scratch_x("")
         // If no callback, just output black pixels
         for (uint32_t i = 0; i < MODE_H_ACTIVE_PIXELS / 2; i++) {
             dst32[i] = 0;
+            __asm volatile ("" ::: "memory");   /* keep GCC from turning this into a call to memset (flash) */
         }
     }
 
