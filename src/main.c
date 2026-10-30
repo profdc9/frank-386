@@ -1360,9 +1360,10 @@ int main(void) {
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
     #endif
-#ifdef USB_CONSOLE_DEBUG
+#if defined(USB_CONSOLE_DEBUG) && defined(USB_CONSOLE_WAIT)
     // Hold the boot until a terminal opens the port, so nothing is lost
     // before the host enumerates. The pause lets it finish attaching.
+    // Off by default: with HSTX video this wait left the display blank.
     while (!stdio_usb_connected()) {
         sleep_ms(100);
     }

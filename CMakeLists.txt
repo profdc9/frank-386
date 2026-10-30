@@ -76,10 +76,13 @@ option(FORCE_VGA "Force VGA output instead of HDMI" OFF)
 option(DEBUG_ENABLED "Enable verbose debug output" OFF)
 
 # Bring-up console over USB CDC. Implies debug output on and USB HID host
-# off (the one USB controller cannot be both). Boot waits for a terminal to
-# attach, and every DBG_PRINT is flushed and followed by a short pause, so
-# the last line before a crash or hang reaches the host.
+# off (the one USB controller cannot be both). Every DBG_PRINT is flushed and
+# followed by a short pause, so the last line before a crash or hang reaches
+# the host. Boot does not wait for a terminal: with the HSTX output, holding
+# the boot until one connected left the display without a picture (the same
+# code showed a picture when it did not wait). USB_CONSOLE_WAIT restores the wait.
 option(USB_CONSOLE_DEBUG "USB CDC debug console with flush/delay per message" OFF)
+option(USB_CONSOLE_WAIT "USB console: hold the boot until a terminal opens the port" OFF)
 if(USB_CONSOLE_DEBUG)
     set(USB_HID_ENABLED OFF CACHE BOOL "USB HID host" FORCE)
     set(DEBUG_ENABLED ON CACHE BOOL "Enable verbose debug output" FORCE)
@@ -400,6 +403,9 @@ endif()
 
 if(USB_CONSOLE_DEBUG)
     target_compile_definitions(${BUILD_NAME} PRIVATE USB_CONSOLE_DEBUG=1)
+    if(USB_CONSOLE_WAIT)
+        target_compile_definitions(${BUILD_NAME} PRIVATE USB_CONSOLE_WAIT=1)
+    endif()
     target_compile_definitions(video_driver PRIVATE USB_CONSOLE_DEBUG=1)
 endif()
 
