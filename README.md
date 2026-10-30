@@ -298,6 +298,22 @@ Set `redirector = 1` in config.ini.
 
 MIT License. See [LICENSE](LICENSE) for details.
 
+### Licensing notes for this fork
+
+- Changes made in this fork by Daniel L. Marks (profdc9) are released under the MIT License, the same as
+  the original frank-386, **except** changes made inside files that carry a different license notice
+  (see the next point). Those files stay under their own license as a whole.
+- Not every file in this repository is MIT. Individual files carry their own SPDX notice, which is the
+  authoritative statement for that file:
+  - **GPL-3.0-or-later**: the HSTX HDMI driver (`drivers/pico_hdmi/`, used when the firmware is built with
+    `-DHDMI_HSTX=ON`), and `link/`, `slave/` and `boards/frank_core2_slave.h`. The full text is in
+    [`LICENSES/GPL-3.0-or-later.txt`](LICENSES/GPL-3.0-or-later.txt).
+  - **GPL-2.0-or-later**: the PS/2 driver (`drivers/ps2/`, `src/ps2kbd_mrmltr.h`).
+  - **BSD-3-Clause**, **Unlicense** and others, as noted in the files and in the acknowledgments below.
+- Firmware built from this repository therefore includes GPL-licensed code (for example the PS/2 driver,
+  which is part of the normal builds, and the HSTX driver in builds made with `-DHDMI_HSTX=ON`). The complete corresponding source for a
+  binary distributed with this fork is this repository, at the commit the binary was built from.
+
 ## Authors & Contributors
 
 **Mikhail Matveev & DnCraptor**
