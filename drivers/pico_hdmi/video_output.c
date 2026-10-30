@@ -722,8 +722,10 @@ void video_output_start(void)
 
 void video_output_set_dma_priority(void)
 {
-    hw_set_bits(&dma_hw->ch[DMACH_PING].ctrl_trig, DMA_CH0_CTRL_TRIG_HIGH_PRIORITY_BITS);
-    hw_set_bits(&dma_hw->ch[DMACH_PONG].ctrl_trig, DMA_CH0_CTRL_TRIG_HIGH_PRIORITY_BITS);
+    /* al1_ctrl is CTRL without the trigger: a write to ctrl_trig starts the channel, and doing that
+     * while video is running re-triggers ping and pong out of step (frame rate jumped from 60 to ~138 Hz). */
+    hw_set_bits(&dma_hw->ch[DMACH_PING].al1_ctrl, DMA_CH0_CTRL_TRIG_HIGH_PRIORITY_BITS);
+    hw_set_bits(&dma_hw->ch[DMACH_PONG].al1_ctrl, DMA_CH0_CTRL_TRIG_HIGH_PRIORITY_BITS);
 }
 
 void video_output_core1_run(void)
